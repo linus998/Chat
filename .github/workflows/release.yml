@@ -1,0 +1,75 @@
+name: Release (Android + iOS)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-android:
+    name: Android AAB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.6'
+          channel: stable
+      - run: flutter pub get
+      - run: flutter build appbundle --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+
+  build-ios:
+    name: iOS IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.6'
+          channel: stable
+      - run: flutter pub get
+
+      # ----------  CODE SIGNING  ----------
+      - name: Install Apple cert & profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+
+      # ----------  BUILD  ----------
+      - name: Build IPA
+        run: flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
+
+      # ----------  UPLOAD ARTEFACT  ----------
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ipa
+          path: build/ios/ipa/*.ipa
+
+      # (optional) ----------  UPLOAD TO TESTFLIGHT  ----------
+      # - name: Upload to TestFlight
+      #   env:
+      #     API_KEY: ${{ secrets.APPSTORE_API_KEY_ID }}
+      #     API_ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+      #     APP_PATH: build/ios/ipa/*.ipa
+      #   run: xcrun altool --upload-app --type ios -f $APP_PATH --apiKey $API_KEY --apiIssuer $API_ISSUER
